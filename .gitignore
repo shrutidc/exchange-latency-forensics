@@ -1,0 +1,10 @@
+# Local virtualenv -- recreate with the setup line in the README.
+.venv/
+__pycache__/
+*.pyc
+
+# Raw captures. These are machine- and moment-specific, they grow without
+# bound, and every number in the committed results.json / dashboard.html is
+# reproducible by running recorder.py again. Kept out of history on purpose.
+data/
+*.pcap
