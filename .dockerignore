@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+*.pcap
+*.parquet
+.git/
+.gitignore
+dashboard.html
+results.json
+README.md

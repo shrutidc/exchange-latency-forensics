@@ -29,6 +29,7 @@ the file, is what the page reads.
 import argparse
 import asyncio
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -40,9 +41,16 @@ from pathlib import Path
 import numpy as np
 import orjson
 import websockets
+from scipy import stats
 
 from dashboard import render_page
 from recorder import WS_URL, ParquetSink
+
+# Where the measurement is taken from. On a hosted deployment this is the
+# server's region, NOT the viewer's -- the distinction matters enough to put
+# on the page, because every remote viewer would otherwise read these as
+# their own latency. Set VANTAGE (or FLY_REGION / RENDER_REGION) at deploy.
+VANTAGE = "this machine"
 
 LIVE_BOOT = """
 const statusEl = document.createElement('div');
@@ -57,11 +65,16 @@ document.addEventListener('mouseout', e => {
   if (e.target.closest('.chartbox') && !e.relatedTarget?.closest?.('.chartbox')) hovering = false;
 });
 
-function setStatus(state, detail) {
+function setStatus(state, detail, vantage) {
+  if (vantage) statusEl.dataset.vantage = vantage;
+  const v = statusEl.dataset.vantage;
   const age = lastOk ? Math.round((Date.now() - lastOk) / 1000) : null;
   statusEl.innerHTML =
     `<span class="pulse ${state}"></span><b>${detail}</b>`
     + (age !== null ? `<span class="dim">updated ${age}s ago</span>` : '')
+    // Name the vantage point: these are the server's numbers, not the
+    // viewer's, and on a hosted instance that is not obvious.
+    + (v ? `<span class="dim">measured from ${v}</span>` : '')
     + `<button id="pausebtn">${paused ? 'Resume' : 'Pause'}</button>`;
   document.getElementById('pausebtn').onclick = () => { paused = !paused; setStatus(state, detail); };
 }
@@ -82,7 +95,7 @@ async function tick() {
     R = data;
     build();
     setStatus('live', `Live · ${data.capture.messages.toLocaleString()} messages in the last `
-      + `${Math.round(data.capture.duration_s)}s`);
+      + `${Math.round(data.capture.duration_s)}s`, data.vantage);
   } catch (err) {
     failures++;
     // Say it plainly rather than showing stale numbers as if they were current.
@@ -143,6 +156,34 @@ class Window:
     def snapshot(self) -> list[dict]:
         with self.lock:
             return list(self.rows)
+
+
+class StatsCache:
+    """One computed payload shared by every viewer.
+
+    Without this, N browsers polling once a second means N full recomputes a
+    second over the whole window -- the cost scales with the audience for a
+    number that is identical for all of them. Recompute at most every
+    `ttl` seconds and hand the same serialized bytes to everyone.
+    """
+
+    def __init__(self, window: "Window", ttl: float = 1.0):
+        self.window, self.ttl = window, ttl
+        self.lock = threading.Lock()
+        self.at = 0.0
+        self.body = b'{"warming_up":true,"messages":0,"need":20}'
+
+    def get(self) -> bytes:
+        now = time.monotonic()
+        with self.lock:
+            if now - self.at < self.ttl:
+                return self.body
+            # Mark first so concurrent requests do not all pile into compute().
+            self.at = now
+        body = orjson.dumps(compute(self.window.snapshot()))
+        with self.lock:
+            self.body = body
+        return body
 
 
 def quantiles(a: np.ndarray, unit: str) -> dict:
@@ -237,14 +278,17 @@ def compute(rows: list[dict]) -> dict:
         "significant": bool(w_p < 0.001),
     }
 
+    out["vantage"] = VANTAGE
     out["clock"] = {
         "negative_latency_rows": int((lat < 0).sum()),
         "sessions": None, "pool_warning": None,
-        "note": ("Latency is local wall clock minus exchange timestamp. Neither "
-                 "side is PTP-synced, so a constant NTP offset of up to a few ms "
-                 "shifts the whole distribution. This is a single live session, so "
-                 "that offset is constant across everything shown here and cannot "
-                 "vary between the numbers above."),
+        "note": ("Latency is local wall clock minus exchange timestamp, measured "
+                 f"from {VANTAGE} — not from your device. A viewer on the other "
+                 "side of the world sees the same numbers, because they describe "
+                 "the link between this server and the exchange. Neither side is "
+                 "PTP-synced, so a constant NTP offset of up to a few ms shifts "
+                 "the whole distribution; this is a single live session, so that "
+                 "offset is constant across everything shown here."),
     }
     return out
 
@@ -300,64 +344,31 @@ def _bursts(recv: np.ndarray, lat: np.ndarray, p50: float) -> dict:
     }
 
 
-def _rank(x: np.ndarray) -> np.ndarray:
-    """Average ranks, matching scipy's tie handling."""
-    order = np.argsort(x, kind="mergesort")
-    r = np.empty(x.size, float)
-    sx = x[order]
-    i = 0
-    while i < x.size:
-        j = i
-        while j + 1 < x.size and sx[j + 1] == sx[i]:
-            j += 1
-        r[order[i:j + 1]] = (i + j) / 2 + 1
-        i = j + 1
-    return r
-
-
 def _spearman(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
-    """Spearman rho with a normal-approximation p-value.
+    """Spearman rho and p-value -- scipy, the same call analyze.py makes.
 
-    scipy is used by analyze.py, but this runs on every poll, so it stays in
-    numpy. The approximation is fine here: n is in the hundreds or thousands,
-    and the page only ever reads the exponent.
+    Results are cached per poll (see StatsCache), so this runs about once a
+    second regardless of how many people are watching, which is well within
+    scipy's cost.
     """
-    n = a.size
-    if n < 3:
+    if a.size < 3:
         return 0.0, 1.0
-    ra, rb = _rank(a), _rank(b)
-    ra -= ra.mean(); rb -= rb.mean()
-    denom = np.sqrt((ra ** 2).sum() * (rb ** 2).sum())
-    if denom == 0:
+    res = stats.spearmanr(a, b)
+    rho, pv = float(res.statistic), float(res.pvalue)
+    if not np.isfinite(rho):
         return 0.0, 1.0
-    rho = float((ra * rb).sum() / denom)
-    rho = max(-1.0, min(1.0, rho))
-    if abs(rho) >= 1.0:
-        return rho, 0.0
-    t = abs(rho) * np.sqrt((n - 2) / (1 - rho ** 2))
-    return rho, float(2 * _norm_sf(t))
-
-
-def _norm_sf(z: float) -> float:
-    """Upper-tail normal probability via erfc."""
-    import math
-    return 0.5 * math.erfc(z / math.sqrt(2))
+    return rho, (pv if np.isfinite(pv) else 1.0)
 
 
 def _wilcoxon_p(a: np.ndarray, b: np.ndarray) -> float:
-    """Two-sided Wilcoxon signed-rank p-value, normal approximation."""
+    """Two-sided Wilcoxon signed-rank p-value, via scipy."""
     d = a - b
-    d = d[d != 0]
-    n = d.size
-    if n < 10:
+    if np.count_nonzero(d) < 10:
         return 1.0
-    r = _rank(np.abs(d))
-    w = r[d > 0].sum()
-    mu = n * (n + 1) / 4
-    sd = np.sqrt(n * (n + 1) * (2 * n + 1) / 24)
-    if sd == 0:
+    try:
+        return float(stats.wilcoxon(a, b).pvalue)
+    except ValueError:
         return 1.0
-    return float(2 * _norm_sf(abs(w - mu) / sd))
 
 
 async def feed(window: Window, products: list[str], sink: ParquetSink | None):
@@ -414,8 +425,10 @@ async def feed(window: Window, products: list[str], sink: ParquetSink | None):
 
 
 class Handler(BaseHTTPRequestHandler):
-    def __init__(self, *a, window: Window, page: bytes, **kw):
-        self.window, self.page = window, page
+    protocol_version = "HTTP/1.1"          # keep-alive; needed for sane polling
+
+    def __init__(self, *a, cache: StatsCache, page: bytes, **kw):
+        self.cache, self.page = cache, page
         super().__init__(*a, **kw)
 
     def _send(self, code: int, body: bytes, ctype: str):
@@ -427,14 +440,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.split("?")[0] == "/api/stats":
+        route = self.path.split("?")[0]
+        if route == "/api/stats":
             try:
-                body = orjson.dumps(compute(self.window.snapshot()))
+                return self._send(200, self.cache.get(), "application/json")
             except Exception as e:                   # noqa: BLE001
-                body = orjson.dumps({"error": str(e)})
-                return self._send(500, body, "application/json")
-            return self._send(200, body, "application/json")
-        if self.path.split("?")[0] in ("/", "/index.html"):
+                return self._send(500, orjson.dumps({"error": str(e)}),
+                                  "application/json")
+        if route == "/healthz":
+            # Cheap liveness probe for the platform's health checks -- must not
+            # run compute(), or a health check becomes a load source.
+            return self._send(200, b'{"ok":true}', "application/json")
+        if route in ("/", "/index.html"):
             return self._send(200, self.page, "text/html; charset=utf-8")
         self._send(404, b"not found", "text/plain")
 
@@ -448,6 +465,8 @@ def build_page() -> bytes:
 
 
 async def main_async(args):
+    global VANTAGE
+    VANTAGE = args.vantage
     window = Window(args.window * 60)
     sink = None
     if args.save:
@@ -458,12 +477,13 @@ async def main_async(args):
 
     srv = ThreadingHTTPServer(
         (args.host, args.port),
-        partial(Handler, window=window, page=build_page()),
+        partial(Handler, cache=StatsCache(window), page=build_page()),
     )
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     print(f"live dashboard: http://{args.host}:{args.port}  "
-          f"(rolling {args.window:g}-minute window)", flush=True)
+          f"(rolling {args.window:g}-minute window, vantage: {VANTAGE})",
+          flush=True)
 
     try:
         await feed(window, args.products, sink)
@@ -476,8 +496,22 @@ async def main_async(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8420)
+    # Hosting platforms inject PORT and expect the process to bind 0.0.0.0.
+    # Defaults stay loopback so running it locally does not silently expose
+    # the machine to the network.
+    ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ.get("PORT", "8420")))
+    ap.add_argument(
+        "--vantage",
+        default=(os.environ.get("VANTAGE")
+                 or os.environ.get("FLY_REGION")
+                 or os.environ.get("RENDER_REGION")
+                 or os.environ.get("RAILWAY_REGION")
+                 or "this machine"),
+        help="human label for where the measurement is taken from; shown on "
+             "the page so remote viewers do not read it as their own latency",
+    )
     ap.add_argument("--window", type=float, default=5.0,
                     help="rolling window in minutes (default 5)")
     ap.add_argument("--save", action="store_true",

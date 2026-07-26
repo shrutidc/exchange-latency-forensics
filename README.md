@@ -61,10 +61,47 @@ Notes on the design:
 * If the recorder dies, the page says **"Disconnected from the recorder"**
   and shows how stale the numbers are, rather than displaying old values as
   though they were current. It reconnects on its own when the server returns.
-* Statistics used on every poll (Spearman, Wilcoxon) are reimplemented in
-  numpy to keep the request path light. Ranks and ρ match scipy exactly; the
-  p-values use a normal approximation, which is immaterial at the sample
-  sizes and exponents involved.
+* Statistics use **scipy** — the same `spearmanr` and `wilcoxon` calls
+  `analyze.py` makes, so the live and batch numbers are identical, not
+  merely close. Results are cached per second and shared across viewers, so
+  scipy runs about once a second no matter how many people are watching.
+* Every chart sizes itself to its container, so text renders at its true size
+  on a phone rather than being scaled down to ~3px. Verified at 320, 375, 768
+  and desktop widths: no clipped labels, no sideways page scroll, wide tables
+  scroll inside their own box.
+
+## Hosting it for other people
+
+The live server is a **stateful long-running process** — it holds a WebSocket
+to the exchange and keeps a rolling window in memory. That rules out static
+hosts (GitHub Pages, Netlify) and any platform that sleeps idle instances,
+which would sever the feed.
+
+A `Dockerfile` is included and runs unchanged on Fly.io, Render, Railway,
+Cloud Run, or a plain VPS:
+
+```bash
+docker build -t latency-lab . && docker run -p 8080:8080 -e VANTAGE="my laptop" latency-lab
+```
+
+Points that matter when it is public:
+
+* **Set `VANTAGE`.** Hosted, the page measures *the server's* link to the
+  exchange, not the viewer's. Someone in Mumbai looking at a Frankfurt
+  instance sees Frankfurt's latency. The page names its vantage point in the
+  status bar and the footer so this cannot be misread — set it to the region
+  you deploy to.
+* `HOST` and `PORT` are read from the environment; the container defaults to
+  `0.0.0.0:8080`. Locally the default stays loopback so running it does not
+  quietly expose your machine.
+* `/healthz` is a cheap liveness probe that never touches the stats cache, so
+  health checks do not become a load source.
+* The server is Python's `ThreadingHTTPServer` — one thread per connection.
+  Fine for tens of concurrent viewers; put it behind a CDN or move to an ASGI
+  server if you expect hundreds.
+* Only `requirements-live.txt` is installed in the image. `duckdb` and
+  `pandas` are batch-analysis dependencies that `live.py` never imports, and
+  omitting them saves roughly 200MB.
 
 ## Optional: packet-level capture
 

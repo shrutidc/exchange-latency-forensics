@@ -1,0 +1,11 @@
+# Runtime dependencies for live.py only.
+#
+# live.py imports dashboard.py (stdlib only) and recorder.py (pyarrow, for the
+# optional --save path). It does NOT import analyze.py, so duckdb and pandas
+# are deliberately absent -- they are batch-analysis dependencies and would
+# add roughly 200MB to the container for code the server never executes.
+websockets==16.1.1
+orjson==3.11.9
+pyarrow==25.0.0
+scipy==1.18.0
+numpy==2.5.1

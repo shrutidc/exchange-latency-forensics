@@ -107,6 +107,19 @@
   details { margin-top: 16px; }
   summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; }
   .foot { color: var(--muted); font-size: 12.5px; margin-top: 26px; line-height: 1.6; }
+  /* Wide tables scroll inside their own box; the page never scrolls sideways. */
+  .tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+  @media (max-width: 620px) {
+    body { padding: 18px 12px 48px; }
+    h1 { font-size: 21px; }
+    h2 { font-size: 15.5px; }
+    .card { padding: 15px 14px; border-radius: 10px; }
+    .kpi { padding: 13px 14px; }
+    .kpi .value { font-size: 25px; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+    .sub { font-size: 13px; margin-bottom: 20px; }
+    th, td { padding: 6px 8px; white-space: nowrap; }
+  }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 </style>
 </head>
@@ -6316,6 +6329,26 @@ const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).
 // certainty no test can deliver. Report it as a bound instead.
 const pfmt = v => v > 0 ? '= ' + v.toExponential(1) : '< 1e-308';
 
+// Charts are drawn in a viewBox equal to the container's CSS width, so the
+// SVG renders 1:1 and a declared 11px label is actually 11px -- on a phone a
+// fixed 940-wide viewBox scales to ~0.3 and the same label lands at 3.4px,
+// which is unreadable. `narrow` switches the cramped layouts (long category
+// labels beside short bars) to a stacked arrangement.
+function geom(mount) {
+  // Charts are drawn into their card BEFORE the card is attached, so the
+  // mount measures 0 wide. Fall back to the page container minus the card's
+  // horizontal padding -- measuring the detached node would silently give
+  // every chart the 940px desktop layout on a phone.
+  let w = (mount && mount.clientWidth) || 0;
+  if (!w) {
+    const app = document.getElementById('app');
+    const pad = matchMedia('(max-width: 620px)').matches ? 30 : 46;
+    w = Math.max(0, (app ? app.clientWidth : 0) - pad);
+  }
+  const W = Math.max(280, Math.round(w || 940));
+  return { W, narrow: W < 560 };
+}
+
 /* ---------- tooltip helper shared by every chart ---------- */
 function attachTip(box) {
   const tip = $('div', { class: 'tip' });
@@ -6334,7 +6367,9 @@ function attachTip(box) {
 
 /* ---------- 1. latency distribution ---------- */
 function histogram(mount) {
-  const h = R.histogram, W = 940, H = 300, P = { t: 12, r: 12, b: 42, l: 56 };
+  const h = R.histogram, g = geom(mount), W = g.W;
+  const H = g.narrow ? 230 : 300;
+  const P = { t: 12, r: 12, b: 42, l: g.narrow ? 36 : 56 };
   const iw = W - P.l - P.r, ih = H - P.t - P.b;
   const box = $('div', { class: 'chartbox' });
   const svg = $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img',
@@ -6386,7 +6421,8 @@ function histogram(mount) {
     text: v >= 1 ? fmt(v, v >= 100 ? 0 : 1) : fmt(v, 2) })));
   svg.appendChild($('text', { x: P.l + iw / 2, y: H - 6, 'text-anchor': 'middle',
     fill: css('--text-secondary'), 'font-size': 12,
-    text: 'end-to-end latency (ms)' + (log ? ' — log scale' : '') }));
+    text: (g.narrow ? 'latency (ms)' : 'end-to-end latency (ms)')
+          + (log ? ' — log scale' : '') }));
 
   // p50 / p99 markers, direct-labelled
   [['p50', R.latency.p50], ['p99', R.latency.p99]].forEach(([n, v], k) => {
@@ -6424,7 +6460,8 @@ function timeline(mount) {
     { key: 'p99_ms', label: 'tail latency, p99 per second (ms)', color: css('--series-1') },
     { key: 'msgs',   label: 'messages received per second',      color: css('--series-2') },
   ];
-  const W = 940, H = 190, P = { t: 14, r: 12, b: 30, l: 56 };
+  const g = geom(mount), W = g.W, H = g.narrow ? 150 : 190;
+  const P = { t: 14, r: 12, b: 30, l: g.narrow ? 40 : 56 };
   const iw = W - P.l - P.r, ih = H - P.t - P.b;
   const tmin = t[0], tmax = t[t.length - 1];
   const sx = v => P.l + (v - tmin) / (tmax - tmin || 1) * iw;
@@ -6515,30 +6552,46 @@ function bursts(mount) {
                 css('--ord-4'), css('--ord-5')];
   const rows = B.latency_by_burst_size
     .map((v, i) => ({ name: v.label, v, color: cols[i % cols.length] }));
-  const W = 940, H = 200, P = { t: 12, r: 120, b: 34, l: 120 };
+  const g = geom(mount), W = g.W;
+  // Narrow: label sits above its bar, so the bar keeps the full width.
+  // Wide: label to the left, value to the right of the bar end.
+  const band = g.narrow ? 46 : 38;
+  const H = band * rows.length + (g.narrow ? 40 : 46);
+  const P = { t: 12, r: g.narrow ? 12 : 120, b: 34, l: g.narrow ? 4 : 120 };
   const iw = W - P.l - P.r, ih = H - P.t - P.b;
   const vmax = Math.max(...rows.map(r => r.v.p50_ms)) * 1.15 || 1;
   const box = $('div', { class: 'chartbox' });
   const svg = $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img',
     'aria-label': 'Median burst latency by burst size' });
-  const band = ih / rows.length, bh = Math.min(30, band - 10);
+  const bh = g.narrow ? 20 : 26;
   rows.forEach((r, i) => {
-    const y = P.t + i * band + (band - bh) / 2;
+    const top = P.t + i * band;
+    const y = g.narrow ? top + 18 : top + (band - bh) / 2;
     const w = Math.max(2, (r.v.p50_ms / vmax) * iw);
-    svg.appendChild($('text', { x: P.l - 12, y: y + bh / 2 + 4, 'text-anchor': 'end',
-      fill: css('--text-primary'), 'font-size': 13, text: r.name }));
+    const label = `${fmt(r.v.p50_ms)} ms  (${r.v.bursts.toLocaleString()} bursts)`;
+    if (g.narrow) {
+      svg.appendChild($('text', { x: P.l, y: top + 11,
+        fill: css('--text-primary'), 'font-size': 12.5, text: r.name }));
+      svg.appendChild($('text', { x: W - P.r, y: top + 11, 'text-anchor': 'end',
+        fill: css('--text-secondary'), 'font-size': 11.5, text: label }));
+    } else {
+      svg.appendChild($('text', { x: P.l - 12, y: y + bh / 2 + 4, 'text-anchor': 'end',
+        fill: css('--text-primary'), 'font-size': 13, text: r.name }));
+      svg.appendChild($('text', { x: P.l + w + 10, y: y + bh / 2 + 4,
+        fill: css('--text-secondary'), 'font-size': 12.5, text: label }));
+    }
     const rect = $('rect', { x: P.l, y, width: w, height: bh, rx: 4, fill: r.color });
     rect.dataset.i = i;
     svg.appendChild(rect);
-    svg.appendChild($('text', { x: P.l + w + 10, y: y + bh / 2 + 4,
-      fill: css('--text-secondary'), 'font-size': 12.5,
-      text: `${fmt(r.v.p50_ms)} ms  (${r.v.bursts.toLocaleString()} bursts)` }));
   });
-  svg.appendChild($('line', { x1: P.l, x2: P.l, y1: P.t, y2: P.t + ih,
-    stroke: css('--axis'), 'stroke-width': 1 }));
+  if (!g.narrow) {
+    svg.appendChild($('line', { x1: P.l, x2: P.l, y1: P.t, y2: P.t + ih,
+      stroke: css('--axis'), 'stroke-width': 1 }));
+  }
   svg.appendChild($('text', { x: P.l + iw / 2, y: H - 4, 'text-anchor': 'middle',
     fill: css('--text-secondary'), 'font-size': 12,
-    text: 'median burst latency, grouped by how many messages arrived together (ms)' }));
+    text: g.narrow ? 'median latency by clump size (ms)'
+                   : 'median burst latency, grouped by how many messages arrived together (ms)' }));
   box.appendChild(svg);
   const tip = attachTip(box);
   svg.addEventListener('mousemove', ev => {
@@ -6559,43 +6612,60 @@ function experiment(mount) {
     { name: 'A — stdlib json', v: x.a_json, color: css('--series-1') },
     { name: 'B — orjson',      v: x.b_orjson, color: css('--series-2') },
   ];
-  const W = 940, H = 150, P = { t: 10, r: 90, b: 34, l: 130 };
-  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const g = geom(mount), W = g.W;
+  const band = g.narrow ? 52 : 60;
+  const H = band * rows.length + (g.narrow ? 34 : 30);
+  const P = { t: 10, r: g.narrow ? 12 : 90, b: 34, l: g.narrow ? 4 : 130 };
+  const iw = W - P.l - P.r;
   const vmax = Math.max(...rows.map(r => r.v.p99)) * 1.1;
   const sx = v => P.l + (v / vmax) * iw;
   const box = $('div', { class: 'chartbox' });
   const svg = $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img',
     'aria-label': 'Parse time by treatment' });
-  const bh = 26;
+  const bh = g.narrow ? 20 : 26;
   rows.forEach((r, i) => {
-    const y = P.t + i * (ih / 2) + (ih / 2 - bh) / 2;
-    svg.appendChild($('text', { x: P.l - 12, y: y + bh / 2 + 4, 'text-anchor': 'end',
-      fill: css('--text-primary'), 'font-size': 13, text: r.name }));
-    // p50 bar, with a p99 whisker so the tail is visible too
+    const top = P.t + i * band;
+    const y = g.narrow ? top + 22 : top + (band - bh) / 2;
     const w50 = Math.max(2, sx(r.v.p50) - P.l);
-    svg.appendChild($('rect', { x: P.l, y, width: w50, height: bh, rx: 4, fill: r.color }));
     const x99 = sx(r.v.p99);
+    if (g.narrow) {
+      svg.appendChild($('text', { x: P.l, y: top + 12,
+        fill: css('--text-primary'), 'font-size': 12.5, text: r.name }));
+      svg.appendChild($('text', { x: W - P.r, y: top + 12, 'text-anchor': 'end',
+        fill: css('--text-secondary'), 'font-size': 12,
+        text: `${fmt(r.v.p50)} µs` }));
+    } else {
+      svg.appendChild($('text', { x: P.l - 12, y: y + bh / 2 + 4, 'text-anchor': 'end',
+        fill: css('--text-primary'), 'font-size': 13, text: r.name }));
+      svg.appendChild($('text', { x: P.l + w50 + 10, y: y + bh / 2 + 4,
+        fill: css('--text-secondary'), 'font-size': 12.5,
+        text: `${fmt(r.v.p50)} µs` }));
+    }
+    // p50 bar, with a p99 whisker so the tail is visible too
+    svg.appendChild($('rect', { x: P.l, y, width: w50, height: bh, rx: 4, fill: r.color }));
     svg.appendChild($('line', { x1: x99, x2: x99, y1: y - 4, y2: y + bh + 4,
       stroke: css('--text-secondary'), 'stroke-width': 2 }));
-    svg.appendChild($('text', { x: P.l + w50 + 10, y: y + bh / 2 + 4,
-      fill: css('--text-secondary'), 'font-size': 12.5,
-      text: `${fmt(r.v.p50)} µs` }));
-    svg.appendChild($('text', { x: x99, y: y - 8, 'text-anchor': 'middle',
-      fill: css('--muted'), 'font-size': 10.5, text: 'p99' }));
+    svg.appendChild($('text', { x: Math.min(x99, W - 14), y: y - 8,
+      'text-anchor': 'middle', fill: css('--muted'), 'font-size': 10.5, text: 'p99' }));
   });
   svg.appendChild($('text', { x: P.l + iw / 2, y: H - 4, 'text-anchor': 'middle',
     fill: css('--text-secondary'), 'font-size': 12,
-    text: 'median parse time per message (µs) — bar = p50, tick = p99' }));
+    text: g.narrow ? 'parse time (µs) — bar p50, tick p99'
+                   : 'median parse time per message (µs) — bar = p50, tick = p99' }));
   box.appendChild(svg);
   mount.appendChild(box);
 }
 
 /* ---------- page assembly ---------- */
 function table(headers, rows) {
+  // Wide numeric tables scroll inside their own container; the page body
+  // must never scroll sideways.
+  const wrap = $('div', { class: 'tablewrap' });
   const t = $('table');
   t.appendChild($('tr', {}, headers.map(h => $('th', { text: h }))));
   rows.forEach(r => t.appendChild($('tr', {}, r.map(c => $('td', { text: c })))));
-  return t;
+  wrap.appendChild(t);
+  return wrap;
 }
 
 function build() {
@@ -6811,6 +6881,18 @@ function build() {
   wasOpen.forEach((o, i) => { if (nowDetails[i]) nowDetails[i].open = o; });
   if (scrollY) window.scrollTo(0, scrollY);
 }
+
+// Charts size themselves to their container, so a rotation or window resize
+// needs a redraw. Debounced, and only when the width actually changed --
+// mobile browsers fire resize on scroll as the URL bar hides.
+let __lastW = 0, __rt = null;
+addEventListener('resize', () => {
+  const w = document.getElementById('app').clientWidth;
+  if (w === __lastW) return;
+  __lastW = w;
+  clearTimeout(__rt);
+  __rt = setTimeout(() => { if (R) build(); }, 150);
+});
 R = JSON.parse(document.getElementById('data').textContent);
 build();
 </script>

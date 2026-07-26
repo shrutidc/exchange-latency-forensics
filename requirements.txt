@@ -1,0 +1,10 @@
+# Full toolkit: recorder, batch analysis, dashboard, live server.
+# For a deployment that only runs live.py, use requirements-live.txt instead --
+# duckdb and pandas are batch-analysis only and add ~200MB to an image.
+websockets==16.1.1
+orjson==3.11.9
+pyarrow==25.0.0
+duckdb==1.5.4
+pandas==3.0.3
+scipy==1.18.0
+numpy==2.5.1
