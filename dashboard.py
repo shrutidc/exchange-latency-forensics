@@ -133,7 +133,9 @@ TEMPLATE = """<!doctype html>
 </div>
 <script id="data" type="application/json">__DATA__</script>
 <script>
-const R = JSON.parse(document.getElementById('data').textContent);
+// Reassignable: the static page sets this once from the embedded payload,
+// the live page replaces it on every poll and calls build() again.
+let R = null;
 const $ = (t, a = {}, kids = []) => {
   const ns = ['svg','g','rect','path','line','text','circle','polyline'].includes(t);
   const el = ns ? document.createElementNS('http://www.w3.org/2000/svg', t)
@@ -437,6 +439,13 @@ function table(headers, rows) {
 
 function build() {
   const app = document.getElementById('app');
+  // Idempotent: the live page calls this repeatedly. Remember which tables
+  // the reader had expanded, and the scroll position, so a refresh does not
+  // collapse the section they were reading or jump them back to the top.
+  const wasOpen = [...app.querySelectorAll('details')].map(d => d.open);
+  const scrollY = window.scrollY;
+  app.textContent = '';
+
   const c = R.capture, L = R.latency, X = R.experiment;
   document.getElementById('subtitle').textContent =
     `${c.messages.toLocaleString()} trade messages from ${c.products.join(', ')} · `
@@ -635,12 +644,29 @@ function build() {
   app.appendChild(card);
 
   document.getElementById('foot').textContent = R.clock ? R.clock.note : '';
+
+  // Restore reader state after the rebuild.
+  const nowDetails = [...app.querySelectorAll('details')];
+  wasOpen.forEach((o, i) => { if (nowDetails[i]) nowDetails[i].open = o; });
+  if (scrollY) window.scrollTo(0, scrollY);
 }
-build();
+__BOOT__
 </script>
 </body>
 </html>
 """
+
+STATIC_BOOT = """R = JSON.parse(document.getElementById('data').textContent);
+build();"""
+
+
+def render_page(data_json: str, boot: str = STATIC_BOOT) -> str:
+    """Fill the page template. `data_json` is inlined for the static build and
+    left as `null` for the live server, which fetches its data instead."""
+    # Guard against the JSON payload closing the <script> tag early.
+    return (TEMPLATE
+            .replace("__DATA__", data_json.replace("</", "<\\/"))
+            .replace("__BOOT__", boot))
 
 
 def main():
@@ -649,10 +675,7 @@ def main():
     ap.add_argument("--out", type=Path, default=Path("dashboard.html"))
     args = ap.parse_args()
 
-    data = args.results.read_text()
-    # Guard against the JSON payload closing the <script> tag early.
-    data = data.replace("</", "<\\/")
-    args.out.write_text(TEMPLATE.replace("__DATA__", data))
+    args.out.write_text(render_page(args.results.read_text()))
     print(f"wrote {args.out}")
 
 

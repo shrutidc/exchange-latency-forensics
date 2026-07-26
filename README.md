@@ -31,6 +31,41 @@ python3 -m venv .venv && .venv/bin/pip install websockets orjson pyarrow duckdb 
 
 Open `dashboard.html` in any browser. It is fully self-contained.
 
+## Live mode
+
+The pipeline above produces a snapshot. To watch the distribution move
+instead:
+
+```bash
+.venv/bin/python live.py
+```
+
+Then open <http://127.0.0.1:8420>. The recorder and the analysis run in one
+process; the page polls once a second and re-renders. `--window` sets the
+rolling window in minutes (default 5), `--save` also writes the session to
+Parquet, `--port` moves the server.
+
+Notes on the design:
+
+* Statistics cover a **rolling window**, not a whole capture, so the page
+  describes the feed as it is now rather than accumulating history forever.
+* The charts are the *same code* as the static dashboard — `dashboard.py`
+  owns the rendering and `live.py` supplies data in the identical shape, so
+  the two views cannot drift apart. Verified: on the same input, `live.py`'s
+  `compute()` reproduces `analyze.py` exactly across every percentile, burst
+  bucket and histogram bin.
+* A live session is one session by construction, so the cross-session
+  clock-offset trap that `--session all` guards against cannot arise here.
+* The page does not repaint while you are hovering a chart, and it preserves
+  expanded tables and scroll position across refreshes.
+* If the recorder dies, the page says **"Disconnected from the recorder"**
+  and shows how stale the numbers are, rather than displaying old values as
+  though they were current. It reconnects on its own when the server returns.
+* Statistics used on every poll (Spearman, Wilcoxon) are reimplemented in
+  numpy to keep the request path light. Ranks and ρ match scipy exactly; the
+  p-values use a normal approximation, which is immaterial at the sample
+  sizes and exponents involved.
+
 ## Optional: packet-level capture
 
 Application timestamps tell you when *Python* saw the message. Packet
@@ -57,7 +92,8 @@ Treat it as a bound on kernel→userspace cost, not per-message truth.
 |---|---|
 | `recorder.py` | Subscribes, stamps every message with `time.time_ns()`, batches to Parquet (zstd). Parses each message with both `json` and `orjson` and records both durations — that's the paired A/B sample. |
 | `analyze.py` | DuckDB over the Parquet files. Latency distribution, per-product breakdown, per-second volume series, burst/queueing analysis, and the statistical test. |
-| `dashboard.py` | Renders `results.json` into a single self-contained HTML page written for a non-engineer. |
+| `dashboard.py` | Renders `results.json` into a single self-contained HTML page written for a non-engineer. Owns the chart code that live mode reuses. |
+| `live.py` | Recorder + analysis + HTTP server in one process, serving a self-refreshing dashboard over a rolling window. |
 | `pcap_capture.sh` / `pcap_join.py` | Optional kernel-timestamp capture and the network-vs-processing split. |
 
 ## Four things this project gets right that are easy to get wrong

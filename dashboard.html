@@ -6294,7 +6294,9 @@
   }
 }</script>
 <script>
-const R = JSON.parse(document.getElementById('data').textContent);
+// Reassignable: the static page sets this once from the embedded payload,
+// the live page replaces it on every poll and calls build() again.
+let R = null;
 const $ = (t, a = {}, kids = []) => {
   const ns = ['svg','g','rect','path','line','text','circle','polyline'].includes(t);
   const el = ns ? document.createElementNS('http://www.w3.org/2000/svg', t)
@@ -6598,6 +6600,13 @@ function table(headers, rows) {
 
 function build() {
   const app = document.getElementById('app');
+  // Idempotent: the live page calls this repeatedly. Remember which tables
+  // the reader had expanded, and the scroll position, so a refresh does not
+  // collapse the section they were reading or jump them back to the top.
+  const wasOpen = [...app.querySelectorAll('details')].map(d => d.open);
+  const scrollY = window.scrollY;
+  app.textContent = '';
+
   const c = R.capture, L = R.latency, X = R.experiment;
   document.getElementById('subtitle').textContent =
     `${c.messages.toLocaleString()} trade messages from ${c.products.join(', ')} · `
@@ -6796,7 +6805,13 @@ function build() {
   app.appendChild(card);
 
   document.getElementById('foot').textContent = R.clock ? R.clock.note : '';
+
+  // Restore reader state after the rebuild.
+  const nowDetails = [...app.querySelectorAll('details')];
+  wasOpen.forEach((o, i) => { if (nowDetails[i]) nowDetails[i].open = o; });
+  if (scrollY) window.scrollTo(0, scrollY);
 }
+R = JSON.parse(document.getElementById('data').textContent);
 build();
 </script>
 </body>
