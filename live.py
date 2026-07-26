@@ -512,8 +512,9 @@ def main():
         help="human label for where the measurement is taken from; shown on "
              "the page so remote viewers do not read it as their own latency",
     )
-    ap.add_argument("--window", type=float, default=5.0,
-                    help="rolling window in minutes (default 5)")
+    ap.add_argument("--window", type=float,
+                    default=float(os.environ.get("WINDOW_MINUTES", "5")),
+                    help="rolling window in minutes (default 5, env WINDOW_MINUTES)")
     ap.add_argument("--save", action="store_true",
                     help="also write the session to Parquet")
     ap.add_argument("--out", type=Path, default=Path("data"))

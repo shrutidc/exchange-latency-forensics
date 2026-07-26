@@ -1,0 +1,57 @@
+# Fly.io deployment for the live latency dashboard.
+#
+# Change `app` to a name you own, and `primary_region` to the region you
+# actually want to measure from -- the numbers describe the link between THAT
+# region and the exchange, and VANTAGE below must agree with it or the page
+# will tell viewers something untrue.
+#
+#   fly auth login
+#   fly launch --no-deploy --copy-config --name <your-app-name>
+#   fly deploy
+#
+app = "exchange-latency-forensics"
+primary_region = "iad"          # us-east; "ewr", "lhr", "fra", "sin", "syd" …
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  # Shown in the status bar and footer. Keep it honest and keep it in sync
+  # with primary_region above.
+  VANTAGE = "Fly.io us-east (iad)"
+  # Rolling window in minutes.
+  WINDOW_MINUTES = "5"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+
+  # This is the important part. A machine that stops on idle drops the
+  # WebSocket to the exchange and empties the rolling window, so the first
+  # visitor after a quiet spell would meet an empty dashboard and a cold
+  # reconnect. Keep exactly one machine up at all times.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # One process holding one feed and one in-memory window. Do NOT scale this
+  # past a single machine without changing the design: each instance would
+  # open its own exchange connection and serve a different rolling window, so
+  # viewers would see different numbers depending on which one they hit.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"              # scipy + numpy + pyarrow need headroom
