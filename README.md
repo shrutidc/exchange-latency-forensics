@@ -70,12 +70,51 @@ Notes on the design:
   and desktop widths: no clipped labels, no sideways page scroll, wide tables
   scroll inside their own box.
 
+## Sharing it — free, no account
+
+```bash
+./share.sh
+```
+
+Prints a public HTTPS URL that works from any phone, tablet or laptop:
+
+```
+https://<random-words>.trycloudflare.com
+```
+
+It runs `live.py` on localhost and puts a Cloudflare Quick Tunnel in front of
+it. No signup, no card, no hosting bill. Requires `brew install cloudflared`.
+
+What it exposes: one read-only page and one read-only JSON endpoint, both
+serving latency statistics about a public market-data feed. No upload path,
+no filesystem access, and the tunnel reaches `127.0.0.1:PORT` only — not the
+rest of the machine.
+
+Two real limits: the URL is **random and changes on every restart**, and the
+site is only up while your machine is awake and the script is running. That
+suits a demo or sharing with a few people. For a permanent address, either
+use a named Cloudflare tunnel (free account, your own domain) or host it —
+below.
+
+Set `VANTAGE` to something truthful, because the page will repeat it:
+
+```bash
+VANTAGE="a Mac in Lubbock, TX" ./share.sh
+```
+
 ## Hosting it for other people
 
 The live server is a **stateful long-running process** — it holds a WebSocket
 to the exchange and keeps a rolling window in memory. That rules out static
 hosts (GitHub Pages, Netlify) and any platform that sleeps idle instances,
 which would sever the feed.
+
+On *free* tiers specifically: most either sleep idle instances (so a visitor
+meets a cold start and an empty rolling window) or are time-limited. The one
+durably free option that fits this workload is a free-tier VM — Oracle Cloud's
+Always Free ARM instance is the usual choice — which is just a small VPS, so
+follow the container instructions below on it. Free-tier terms change often;
+check current terms before relying on any of them.
 
 A `Dockerfile` is included and runs unchanged on Fly.io, Render, Railway,
 Cloud Run, or a plain VPS:
@@ -131,6 +170,7 @@ Treat it as a bound on kernel→userspace cost, not per-message truth.
 | `analyze.py` | DuckDB over the Parquet files. Latency distribution, per-product breakdown, per-second volume series, burst/queueing analysis, and the statistical test. |
 | `dashboard.py` | Renders `results.json` into a single self-contained HTML page written for a non-engineer. Owns the chart code that live mode reuses. |
 | `live.py` | Recorder + analysis + HTTP server in one process, serving a self-refreshing dashboard over a rolling window. |
+| `share.sh` | Publishes the live dashboard at a public HTTPS URL via a Cloudflare Quick Tunnel — free, no account. |
 | `pcap_capture.sh` / `pcap_join.py` | Optional kernel-timestamp capture and the network-vs-processing split. |
 
 ## Four things this project gets right that are easy to get wrong
