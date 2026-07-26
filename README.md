@@ -1,6 +1,6 @@
 # Exchange Latency Forensics Lab
 
-### 📊 [**Read the report →**](https://shrutidc.github.io/exchange-latency-forensics/)
+### 📊 [**Read the report →**](https://shrutidc.github.io/nanochron/)
 
 Capture a live market data feed, measure its end-to-end latency distribution
 down to the tail, and run controlled experiments that prove which changes
@@ -46,7 +46,7 @@ what GitHub Pages publishes (see below).
 
 ## The published report
 
-**<https://shrutidc.github.io/exchange-latency-forensics/>**
+**<https://shrutidc.github.io/nanochron/>**
 
 `docs/index.html` is committed and served by GitHub Pages from `main` `/docs`.
 A permanent URL over HTTPS, with no process running that can die — and it
