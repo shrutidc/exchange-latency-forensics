@@ -26,10 +26,24 @@ python3 -m venv .venv && .venv/bin/pip install websockets orjson pyarrow duckdb 
 ```
 
 ```bash
-.venv/bin/python dashboard.py --results results.json --out dashboard.html
+.venv/bin/python dashboard.py --results results.json --out docs/index.html
 ```
 
-Open `dashboard.html` in any browser. It is fully self-contained.
+Open `docs/index.html` in any browser. It is fully self-contained — and it is
+what GitHub Pages publishes (see below).
+
+## The published report (GitHub Pages)
+
+`docs/index.html` is committed, so GitHub Pages can serve it as a permanent
+public URL with nothing running that can die. Enable it once:
+
+> **Settings → Pages → Source: Deploy from a branch → `main` / `/docs` → Save**
+
+It then lives at `https://<user>.github.io/exchange-latency-forensics/`, and
+every push that regenerates `docs/index.html` updates it.
+
+This is the right artifact to link to. The findings live in the batch capture,
+not in a live ticker, and a static file cannot be down.
 
 ## Live mode
 
@@ -169,11 +183,12 @@ Treat it as a bound on kernel→userspace cost, not per-message truth.
 | `recorder.py` | Subscribes, stamps every message with `time.time_ns()`, batches to Parquet (zstd). Parses each message with both `json` and `orjson` and records both durations — that's the paired A/B sample. |
 | `analyze.py` | DuckDB over the Parquet files. Latency distribution, per-product breakdown, per-second volume series, burst/queueing analysis, and the statistical test. |
 | `dashboard.py` | Renders `results.json` into a single self-contained HTML page written for a non-engineer. Owns the chart code that live mode reuses. |
+| `stats_util.py` | Quantile summaries that carry their own sample support, shared by batch and live so the two can never disagree about what a percentile means. |
 | `live.py` | Recorder + analysis + HTTP server in one process, serving a self-refreshing dashboard over a rolling window. |
 | `share.sh` | Publishes the live dashboard at a public HTTPS URL via a Cloudflare Quick Tunnel — free, no account. |
 | `pcap_capture.sh` / `pcap_join.py` | Optional kernel-timestamp capture and the network-vs-processing split. |
 
-## Four things this project gets right that are easy to get wrong
+## Five things this project gets right that are easy to get wrong
 
 These are not hypothetical — each one produced a wrong number during
 development, and the code now guards against it.
@@ -206,7 +221,30 @@ tail-vs-median spread, the volume correlation, or the A/B experiment — all of
 which are relative measures. The dashboard states this in its footer rather
 than implying a precision the setup cannot deliver.
 
-**4. Position within a burst is a confounded variable — and it lies convincingly.**
+**4. A percentile is only as good as the sample behind it.**
+p99.9 over a 1,700-message window is interpolated from about *two* messages —
+it is not an estimate of the tail, it is the second-largest value wearing a
+statistical label. Displayed as a headline KPI it claims a precision the
+sample cannot support, which is the same failure as quoting p = 7e-10 on an
+effect size of 0.09.
+
+So every percentile now ships with its **support** — how many observations sit
+at or above it (`stats_util.py`) — and the dashboard grades what it will say:
+
+| support | behaviour |
+|---|---|
+| ≥ 10 | reported normally |
+| 3–9 | reported, marked *"based on just N messages — treat as provisional"* |
+| < 3 | **refused** — shows `—` and *"too few to estimate"* |
+
+The rule applies everywhere at once, so the page cannot contradict itself: if
+p99 is unsupported, the KPI shows a dash, the histogram drops its p99 marker,
+and the headline verdict falls back to the deepest percentile that *is*
+supported (or says outright that there is not enough data yet). The 20-minute
+batch capture reports p99.9 = 2,808 ms with a support of 8, so it is shown and
+flagged provisional rather than quietly asserted.
+
+**5. Position within a burst is a confounded variable — and it lies convincingly.**
 Messages arrive in clumps. Correlating a message's *position* in its clump
 against its latency gives ρ = 0.41 at p = 2e-45, which looks like a decisive
 finding: "the tail is queueing, later messages drain slower." It is an

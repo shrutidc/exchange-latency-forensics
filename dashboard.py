@@ -102,6 +102,9 @@ TEMPLATE = """<!doctype html>
   .kpi .value { font-size: 30px; font-weight: 600; margin: 6px 0 2px; letter-spacing: -0.02em; }
   .kpi .unit { font-size: 15px; font-weight: 400; color: var(--text-secondary); margin-left: 3px; }
   .kpi .hint { font-size: 12.5px; color: var(--text-secondary); }
+  /* A percentile the sample cannot support: shown as a dash, not a number. */
+  .kpi .value.dim { color: var(--muted); }
+  .kpi .hint.warn { color: var(--warning); margin-top: 3px; }
   .chartbox { position: relative; }
   svg { display: block; width: 100%; height: auto; overflow: visible; }
   .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 0 0 12px; font-size: 13px; color: var(--text-secondary); }
@@ -173,6 +176,16 @@ const pfmt = v => v > 0 ? '= ' + v.toExponential(1) : '< 1e-308';
 // fixed 940-wide viewBox scales to ~0.3 and the same label lands at 3.4px,
 // which is unreadable. `narrow` switches the cramped layouts (long category
 // labels beside short bars) to a stacked arrangement.
+// A percentile is only as good as the number of observations beyond it.
+// p99.9 over a 1,700-message window rests on about two messages -- shown as
+// a headline it claims precision the sample cannot support. Mirrors the
+// thresholds in stats_util.py.
+const LOW_SUPPORT = 10, MIN_SUPPORT = 3;
+const supportOf = (s, k) => (s && s.support && s.support[k]) || 0;
+const isSupported = (s, k) => supportOf(s, k) >= MIN_SUPPORT;
+const isWeak = (s, k) => { const n = supportOf(s, k);
+                           return n >= MIN_SUPPORT && n < LOW_SUPPORT; };
+
 function geom(mount) {
   // Charts are drawn into their card BEFORE the card is attached, so the
   // mount measures 0 wide. Fall back to the page container minus the card's
@@ -264,7 +277,11 @@ function histogram(mount) {
           + (log ? ' — log scale' : '') }));
 
   // p50 / p99 markers, direct-labelled
-  [['p50', R.latency.p50], ['p99', R.latency.p99]].forEach(([n, v], k) => {
+  // Only mark percentiles the sample supports -- drawing a p99 rule next to a
+  // KPI that just refused to report p99 would contradict the page itself.
+  [['p50', R.latency.p50, 'p50'], ['p99', R.latency.p99, 'p99']]
+      .filter(([, , key]) => isSupported(R.latency, key))
+      .forEach(([n, v], k) => {
     if (v < lo || v > hi) return;
     const x = sx(v);
     svg.appendChild($('line', { x1: x, x2: x, y1: P.t, y2: P.t + ih,
@@ -539,20 +556,32 @@ function build() {
     app.appendChild(w);
   }
 
-  // verdict
-  const tailRatio = L.p999 / L.p50;
-  const bad = tailRatio > 3;
+  // verdict -- lead with the deepest percentile the sample actually supports,
+  // rather than asserting p99.9 off two observations.
+  const deep = isSupported(L, 'p999') ? { key: 'p999', v: L.p999, label: '1 in 1,000' }
+             : isSupported(L, 'p99')  ? { key: 'p99',  v: L.p99,  label: '1 in 100' }
+             : null;
+  const tailRatio = deep ? deep.v / L.p50 : null;
+  const bad = tailRatio !== null && tailRatio > 3;
   const vc = $('div', { class: 'card verdict' });
   vc.appendChild($('div', { class: 'dot' }));
-  vc.lastChild.style.background = bad ? css('--warning') : css('--good');
+  vc.lastChild.style.background = bad ? css('--warning')
+                                : tailRatio === null ? css('--muted') : css('--good');
   const vt = $('div');
-  vt.appendChild($('h2', { text: bad
-    ? 'The tail is much slower than the typical message'
-    : 'The feed is consistent — the tail tracks the typical message' }));
+  vt.appendChild($('h2', { text: tailRatio === null
+    ? 'Not enough messages yet to describe the tail'
+    : bad ? 'The tail is much slower than the typical message'
+          : 'The feed is consistent — the tail tracks the typical message' }));
   vt.appendChild($('p', { text:
     `Half of all messages arrive within ${fmt(L.p50)} ms of the exchange timestamp. `
-    + `The slowest 1 in 1,000 takes ${fmt(L.p999)} ms — ${fmt(tailRatio, 1)}× the median — `
-    + `and the single worst message took ${fmt(L.max)} ms. `
+    + (deep
+        ? `The slowest ${deep.label} takes ${fmt(deep.v)} ms — ${fmt(tailRatio, 1)}× the median — `
+          + `and the single worst message took ${fmt(L.max)} ms. `
+          + (isWeak(L, deep.key)
+              ? `That tail figure rests on only ${supportOf(L, deep.key)} messages, so treat it as provisional. `
+              : '')
+        : `The window holds ${L.count.toLocaleString()} messages — too few to estimate a tail `
+          + `percentile, though the worst message so far took ${fmt(L.max)} ms. `)
     + (R.volume_correlation
         ? `Across the capture, ${R.volume_correlation.interpretation} `
           + `(Spearman ρ = ${fmt(R.volume_correlation.spearman_rho, 2)}, `
@@ -563,17 +592,31 @@ function build() {
 
   // KPI row
   const k = $('div', { class: 'kpis' });
-  [['Median (p50)', L.p50, 'half of messages are faster'],
-   ['p99', L.p99, '1 in 100 is slower'],
-   ['p99.9', L.p999, '1 in 1,000 is slower'],
-   ['Worst', L.max, 'slowest single message']
-  ].forEach(([lab, v, hint]) => {
+  [['Median (p50)', 'p50', L.p50, 'half of messages are faster'],
+   ['p99', 'p99', L.p99, '1 in 100 is slower'],
+   ['p99.9', 'p999', L.p999, '1 in 1,000 is slower'],
+   // `max` is a single observation by definition; its hint already says so,
+   // so it is exempt from the support test rather than always failing it.
+   ['Worst', null, L.max, 'slowest single message']
+  ].forEach(([lab, key, v, hint]) => {
     const t = $('div', { class: 'kpi' });
     t.appendChild($('div', { class: 'label', text: lab }));
-    const val = $('div', { class: 'value', text: fmt(v) });
-    val.appendChild($('span', { class: 'unit', text: 'ms' }));
-    t.appendChild(val);
-    t.appendChild($('div', { class: 'hint', text: hint }));
+    const n = key ? supportOf(L, key) : null;
+    if (key && !isSupported(L, key)) {
+      // Refuse to print a number the window cannot support.
+      t.appendChild($('div', { class: 'value dim', text: '—' }));
+      t.appendChild($('div', { class: 'hint',
+        text: `only ${n} message${n === 1 ? '' : 's'} above this — too few to estimate` }));
+    } else {
+      const val = $('div', { class: 'value', text: fmt(v) });
+      val.appendChild($('span', { class: 'unit', text: 'ms' }));
+      t.appendChild(val);
+      t.appendChild($('div', { class: 'hint', text: hint }));
+      if (key && isWeak(L, key)) {
+        t.appendChild($('div', { class: 'hint warn',
+          text: `based on just ${n} messages — treat as provisional` }));
+      }
+    }
     k.appendChild(t);
   });
   app.appendChild(k);
@@ -697,7 +740,8 @@ function build() {
       + `In context: at the observed peak of ${Math.max(...R.timeseries.msgs).toLocaleString()} `
       + `messages/sec that saves roughly `
       + `${fmt(X.median_delta_us * Math.max(...R.timeseries.msgs) / 1000, 2)} ms of CPU per second — `
-      + `worth having, but far smaller than the ${fmt(L.p999)} ms p99.9 above, which means `
+      + `worth having, but far smaller than the ${fmt(deep ? deep.v : L.max)} ms `
+      + `${deep ? (deep.key === 'p999' ? 'p99.9' : 'p99') : 'worst case'} above, which means `
       + `the tail is not being caused by parsing.`
     : `The difference is within noise (p ${pfmt(X.wilcoxon_p)}).` }));
   verdict.appendChild(vt2);

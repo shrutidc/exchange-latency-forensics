@@ -7,7 +7,7 @@ WORKDIR /app
 COPY requirements-live.txt .
 RUN pip install --no-cache-dir -r requirements-live.txt
 
-COPY live.py dashboard.py recorder.py ./
+COPY live.py dashboard.py recorder.py stats_util.py ./
 
 # Run unprivileged. Nothing here needs root, and the process is reachable
 # from the public internet.

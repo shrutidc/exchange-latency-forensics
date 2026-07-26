@@ -44,6 +44,7 @@ import websockets
 from scipy import stats
 
 from dashboard import render_page
+from stats_util import quantiles
 from recorder import WS_URL, ParquetSink
 
 # Where the measurement is taken from. On a hosted deployment this is the
@@ -184,16 +185,6 @@ class StatsCache:
         with self.lock:
             self.body = body
         return body
-
-
-def quantiles(a: np.ndarray, unit: str) -> dict:
-    return {
-        "unit": unit, "count": int(a.size),
-        "min": float(a.min()), "p50": float(np.percentile(a, 50)),
-        "p90": float(np.percentile(a, 90)), "p99": float(np.percentile(a, 99)),
-        "p999": float(np.percentile(a, 99.9)), "max": float(a.max()),
-        "mean": float(a.mean()),
-    }
 
 
 def compute(rows: list[dict]) -> dict:

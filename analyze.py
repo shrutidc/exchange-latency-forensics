@@ -30,6 +30,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 from scipy import stats
 
+from stats_util import quantiles
+
 
 def complete_captures(data_dir: Path) -> list[str]:
     """Parquet files that are finished and readable.
@@ -105,23 +107,6 @@ def select_files(data_dir: Path, session: str) -> tuple[list[str], list[dict], s
             )
             print(f"WARNING: {warn}")
     return every, bases, warn
-
-
-def quantiles(arr: np.ndarray, unit: str) -> dict:
-    """Percentile summary. Keys are unit-neutral and the unit is carried
-    alongside -- latency is in ms but the parse experiment is in µs, and a
-    `p50_ms` key holding microseconds is exactly how a wrong number ships."""
-    return {
-        "unit": unit,
-        "count": int(arr.size),
-        "min": float(np.min(arr)),
-        "p50": float(np.percentile(arr, 50)),
-        "p90": float(np.percentile(arr, 90)),
-        "p99": float(np.percentile(arr, 99)),
-        "p999": float(np.percentile(arr, 99.9)),
-        "max": float(np.max(arr)),
-        "mean": float(np.mean(arr)),
-    }
 
 
 def analyze(data_dir: Path, out_path: Path, session: str = "latest"):

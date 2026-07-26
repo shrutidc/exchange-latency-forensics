@@ -6,6 +6,6 @@ data/
 *.parquet
 .git/
 .gitignore
-dashboard.html
+docs/
 results.json
 README.md
