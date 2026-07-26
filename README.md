@@ -1,5 +1,7 @@
 # Exchange Latency Forensics Lab
 
+### 📊 [**Read the report →**](https://shrutidc.github.io/exchange-latency-forensics/)
+
 Capture a live market data feed, measure its end-to-end latency distribution
 down to the tail, and run controlled experiments that prove which changes
 actually made it faster.
@@ -9,10 +11,20 @@ Feed: **Coinbase Exchange** public WebSocket (`wss://ws-feed.exchange.coinbase.c
 exchange-side timestamp at microsecond resolution, which is what makes a real
 end-to-end measurement possible.
 
+**Headline result** — 7,171 trades across 10 products over 20 minutes:
+
+| p50 | p99 | p99.9 | worst |
+|---|---|---|---|
+| 124.5 ms | 329.1 ms | 2,808.5 ms | 4,001.1 ms |
+
+The median is unremarkable; the tail is **22× worse**. The feed runs steadily,
+then stalls for seconds — and the interesting part is that neither message
+volume nor batch size explains it. Details in [The finding](#the-finding).
+
 ## Setup
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install websockets orjson pyarrow duckdb pandas scipy
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
 ## Run it
@@ -32,18 +44,26 @@ python3 -m venv .venv && .venv/bin/pip install websockets orjson pyarrow duckdb 
 Open `docs/index.html` in any browser. It is fully self-contained — and it is
 what GitHub Pages publishes (see below).
 
-## The published report (GitHub Pages)
+## The published report
 
-`docs/index.html` is committed, so GitHub Pages can serve it as a permanent
-public URL with nothing running that can die. Enable it once:
+**<https://shrutidc.github.io/exchange-latency-forensics/>**
 
-> **Settings → Pages → Source: Deploy from a branch → `main` / `/docs` → Save**
+`docs/index.html` is committed and served by GitHub Pages from `main` `/docs`.
+A permanent URL over HTTPS, with no process running that can die — and it
+works on a phone, tablet or laptop.
 
-It then lives at `https://<user>.github.io/exchange-latency-forensics/`, and
-every push that regenerates `docs/index.html` updates it.
+To refresh it with a new capture:
 
-This is the right artifact to link to. The findings live in the batch capture,
-not in a live ticker, and a static file cannot be down.
+```bash
+.venv/bin/python recorder.py --minutes 20 --out data && \
+.venv/bin/python analyze.py --data data --out results.json && \
+.venv/bin/python dashboard.py --results results.json --out docs/index.html && \
+git add -A && git commit -m "Refresh capture" && git push
+```
+
+Note that a new capture is **not comparable to the published one** on absolute
+latency: every session carries its own clock and path offset, which is the
+pooling trap described below. The report always describes a single session.
 
 ## Live mode
 
@@ -84,7 +104,11 @@ Notes on the design:
   and desktop widths: no clipped labels, no sideways page scroll, wide tables
   scroll inside their own box.
 
-## Sharing it — free, no account
+## Demoing live mode to someone else
+
+The published report above is the artifact to link to. This is for when you
+want to show the *live* view to someone — during a call, say — without
+standing up a server.
 
 ```bash
 ./share.sh
@@ -105,10 +129,9 @@ no filesystem access, and the tunnel reaches `127.0.0.1:PORT` only — not the
 rest of the machine.
 
 Two real limits: the URL is **random and changes on every restart**, and the
-site is only up while your machine is awake and the script is running. That
-suits a demo or sharing with a few people. For a permanent address, either
-use a named Cloudflare tunnel (free account, your own domain) or host it —
-below.
+site is only up while your machine is awake and the script is running. Which
+is fine for what this is — a demo you run on purpose, not a service. For a
+permanent address, the published report above already is one.
 
 Set `VANTAGE` to something truthful, because the page will repeat it:
 
@@ -116,12 +139,20 @@ Set `VANTAGE` to something truthful, because the page will repeat it:
 VANTAGE="a Mac in Lubbock, TX" ./share.sh
 ```
 
-## Hosting it for other people
+## Hosting the live server (optional)
 
-The live server is a **stateful long-running process** — it holds a WebSocket
-to the exchange and keeps a rolling window in memory. That rules out static
-hosts (GitHub Pages, Netlify) and any platform that sleeps idle instances,
-which would sever the feed.
+Not recommended, and worth saying why. A permanently hosted live instance
+would foreground the project's *weakest* statistics: a 5-minute rolling window
+holds a couple of thousand messages, which is not enough to support a p99.9 —
+the dashboard correctly refuses to print one at that sample size. The
+defensible claims live in the 20-minute batch capture, which is what the
+published report shows. A live ticker also has to stay up to be worth
+anything, and a dead demo link is worse than no link.
+
+If you want it anyway, the constraint is that the live server is a **stateful
+long-running process** — it holds a WebSocket to the exchange and keeps a
+rolling window in memory. That rules out static hosts (GitHub Pages, Netlify)
+and any platform that sleeps idle instances, which would sever the feed.
 
 On *free* tiers specifically: most either sleep idle instances (so a visitor
 meets a cold start and an empty rolling window) or are time-limited. The one
